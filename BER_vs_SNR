@@ -1,0 +1,141 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from scipy.special import erfc
+import pandas as pd
+
+# ---------------------------
+# Water Types Dictionary
+water_types = {
+    'clear_ocean': {'a': 0.114, 'b': 0.037, 'g': 0.8708},
+    'coastal': {'a': 0.179, 'b': 0.220, 'g': 0.9470},
+    'turbid_harbor': {'a': 0.366, 'b': 1.829, 'g': 0.9199}
+}
+
+# ---------------------------
+# Beer-Lambert Attenuation
+def beam_attenuation(c, distance):
+    return np.exp(-c * distance)
+
+# ---------------------------
+# Henyey-Greenstein Phase Function
+def henvey_greenstein(theta_rad, g):
+    return (1 - g**2) / (4 * np.pi * (1 + g**2 - 2 * g * np.cos(theta_rad))**1.5)
+
+# ---------------------------
+# Misalignment Loss Function
+def misalignment_loss(theta_misalignment_deg, divergence_angle_deg):
+    theta_m = np.radians(theta_misalignment_deg)
+    divergence = np.radians(divergence_angle_deg)
+    return np.exp(-(theta_m / divergence)**2)
+
+# ---------------------------
+# Log-Normal Turbulence Fading
+def turbulence_fading(I0, sigma_I, samples=1000):
+    lnI = np.random.normal(np.log(I0) - 0.5 * sigma_I**2, sigma_I, samples)
+    return np.exp(lnI)
+
+# ---------------------------
+# Q-function using erfc
+def Q(x):
+    return 0.5 * erfc(x / np.sqrt(2))
+
+def ber_bpsk_approx(snr_linear):
+    return Q(np.sqrt(2 * snr_linear))
+
+# ---------------------------
+# Compute Received Power with All Factors
+def compute_received_power_samples(water_type, Pt, distance, theta_deg, divergence_angle, samples):
+    props = water_types[water_type]
+    a, b, g = props['a'], props['b'], props['g']
+    c = a + b
+    theta_rad = np.radians(theta_deg)
+    LP = beam_attenuation(c, distance)
+    align_loss = misalignment_loss(theta_deg, divergence_angle)
+    VSF = henvey_greenstein(theta_rad, g)
+    sigma_I = 0.5  # Fixed turbulence index
+    fading_samples = turbulence_fading(Pt * LP * align_loss * VSF, sigma_I, samples)
+    return fading_samples
+
+# ---------------------------
+# Main Simulation Function with Table and CSV Export
+def simulate_uowc_snr_vs_ber():
+    print("Available water types:", list(water_types.keys()))
+    water_type = input("Enter water type: ").strip()
+    if water_type not in water_types:
+        print("Invalid water type.")
+        return
+
+    try:
+        distance = float(input("Enter distance (meters): "))
+        Pt = float(input("Enter transmit power (Watts): "))
+        theta_deg = float(input("Enter beam misalignment angle (degrees): "))
+        divergence_angle = float(input("Enter beam divergence angle (degrees): "))
+        samples = int(input("Enter number of Monte Carlo samples: "))
+    except ValueError:
+        print("Invalid numeric input.")
+        return
+
+    sigma_I = 0.5  # Fixed turbulence index
+    snr_db_values = np.linspace(0, 30, 15)  # SNR values in dB
+
+    ber_theoretical = []
+    ber_monte_carlo = []
+    records = []
+
+    for snr_db in snr_db_values:
+        snr_linear = 10 ** (snr_db / 10)
+
+        # Theoretical BER
+        ber_t = ber_bpsk_approx(snr_linear)
+        ber_theoretical.append(max(ber_t, 1e-45))
+
+        # Monte Carlo Simulation
+        received_samples = compute_received_power_samples(
+            water_type, Pt, distance, theta_deg, divergence_angle, samples
+        )
+        signal_power = np.mean(received_samples ** 2)
+        noise_power = signal_power / snr_linear
+        snr_samples = received_samples ** 2 / noise_power
+        avg_snr = np.mean(snr_samples)
+        ber_sim = ber_bpsk_approx(avg_snr)
+        ber_monte_carlo.append(max(ber_sim, 1e-45))
+
+        # Collect data
+        records.append({
+            'Water Type': water_type,
+            'Distance (m)': distance,
+            'Power (W)': Pt,
+            'Theta (deg)': theta_deg,
+            'Divergence (deg)': divergence_angle,
+            'SNR (dB)': snr_db,
+            'Theoretical BER': ber_t,
+            'Monte Carlo BER': ber_sim
+        })
+
+    # Create DataFrame
+    df = pd.DataFrame(records)
+    print("\nSimulation Results:")
+    print(df.to_string(index=False))
+
+    # Save to CSV
+    save = input("\nDo you want to save the results to CSV? (y/n): ").strip().lower()
+    if save == 'y':
+        filename = f"uowc_ber_results_{water_type}.csv"
+        df.to_csv(filename, index=False)
+        print(f"Saved as: {filename}")
+
+    # Plotting
+    plt.figure(figsize=(9, 6))
+    plt.semilogy(snr_db_values, ber_theoretical, '--o', label='Theoretical BER')
+    plt.semilogy(snr_db_values, ber_monte_carlo, 'r-s', label='Monte Carlo BER')
+    plt.xlabel("SNR (dB)", fontsize=12)
+    plt.ylabel("BER", fontsize=12)
+    plt.title(f"SNR vs BER – {water_type.replace('_', ' ').title()} (σ={sigma_I})", fontsize=14)
+    plt.legend()
+    plt.tight_layout()
+    plt.grid(True, which='both', linestyle='--', linewidth=0.5)
+    plt.show()
+
+# ---------------------------
+# Run the simulation
+simulate_uowc_snr_vs_ber()
